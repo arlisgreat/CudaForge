@@ -4,3 +4,9 @@ run/
 .vscode/
 
 __pycache__/
+.env
+.env.*
+!.env.example
+ncu_temp_*.csv
+experiments/streamma/runs/
+experiments/streamma/tmp/

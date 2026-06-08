@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0",
+  "protocol": "cudaforge_streamma_v1",
+  "frame_id": "level1_19_round0_contract",
+  "task_id": "KernelBench/level1/19_ReLU.py",
+  "round_idx": 0,
+  "step_idx": 1,
+  "frame_type": "ContractFrame",
+  "producer": "planner_a",
+  "depends_on": [],
+  "summary": "Replace ReLU while preserving ModelNew public API and output tolerance.",
+  "confidence": 0.86,
+  "problem_contract": {
+    "inputs": [
+      "single tensor input from original Model.forward"
+    ],
+    "outputs": [
+      "single tensor output with same shape as input"
+    ],
+    "dtypes": [
+      "preserve input dtype supported by reference task"
+    ],
+    "shape_relations": [
+      "output shape equals input shape"
+    ],
+    "invariants": [
+      "negative values map to zero",
+      "non-negative values remain unchanged"
+    ],
+    "tolerance": "match CudaForge tolerance for the task",
+    "api_preservation": "class ModelNew mirrors original forward signature"
+  }
+}

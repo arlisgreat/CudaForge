@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.cudaforge/streamma/frame_verdict.schema.json",
+  "title": "CudaForge StreamMA frame verdict",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "protocol",
+    "verdict_id",
+    "frame_id",
+    "judge",
+    "decision",
+    "reasons",
+    "visible_to_coder"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "protocol": {
+      "const": "cudaforge_streamma_v1"
+    },
+    "verdict_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]{1,96}$"
+    },
+    "frame_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]{1,96}$"
+    },
+    "judge": {
+      "const": "judge_b"
+    },
+    "decision": {
+      "enum": [
+        "accept",
+        "reject",
+        "revise"
+      ]
+    },
+    "reasons": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      }
+    },
+    "visible_to_coder": {
+      "type": "boolean",
+      "description": "Must be true only when decision is accept."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "accept"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "visible_to_coder": {
+            "const": true
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "visible_to_coder": {
+            "const": false
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

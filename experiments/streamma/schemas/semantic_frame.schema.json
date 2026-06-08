@@ -1,0 +1,471 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.cudaforge/streamma/semantic_frame.schema.json",
+  "title": "CudaForge StreamMA semantic frame",
+  "description": "Schema for semantic communication frames. Non-final frames carry semantics only, never partial CUDA/Python source.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ContractFrame"
+    },
+    {
+      "$ref": "#/$defs/ScheduleFrame"
+    },
+    {
+      "$ref": "#/$defs/MemoryFrame"
+    },
+    {
+      "$ref": "#/$defs/ReductionFrame"
+    },
+    {
+      "$ref": "#/$defs/OptimizationHypothesisFrame"
+    },
+    {
+      "$ref": "#/$defs/FinalCode"
+    }
+  ],
+  "$defs": {
+    "FrameBase": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "protocol",
+        "frame_id",
+        "task_id",
+        "round_idx",
+        "step_idx",
+        "frame_type",
+        "producer",
+        "depends_on",
+        "summary",
+        "confidence"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1.0"
+        },
+        "protocol": {
+          "const": "cudaforge_streamma_v1"
+        },
+        "frame_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,96}$"
+        },
+        "task_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "round_idx": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "step_idx": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "frame_type": {
+          "enum": [
+            "ContractFrame",
+            "ScheduleFrame",
+            "MemoryFrame",
+            "ReductionFrame",
+            "OptimizationHypothesisFrame",
+            "FinalCode"
+          ]
+        },
+        "producer": {
+          "enum": [
+            "planner_a",
+            "judge_b",
+            "coder_c"
+          ]
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,96}$"
+          },
+          "uniqueItems": true
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        }
+      }
+    },
+    "StringList": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      },
+      "minItems": 1,
+      "maxItems": 24
+    },
+    "ContractFrame": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "problem_contract"
+          ],
+          "properties": {
+            "step_idx": {
+              "const": 1
+            },
+            "frame_type": {
+              "const": "ContractFrame"
+            },
+            "producer": {
+              "const": "planner_a"
+            },
+            "problem_contract": {
+              "type": "object",
+              "required": [
+                "inputs",
+                "outputs",
+                "dtypes",
+                "shape_relations",
+                "invariants",
+                "tolerance",
+                "api_preservation"
+              ],
+              "properties": {
+                "inputs": {
+                  "$ref": "#/$defs/StringList"
+                },
+                "outputs": {
+                  "$ref": "#/$defs/StringList"
+                },
+                "dtypes": {
+                  "$ref": "#/$defs/StringList"
+                },
+                "shape_relations": {
+                  "$ref": "#/$defs/StringList"
+                },
+                "invariants": {
+                  "$ref": "#/$defs/StringList"
+                },
+                "tolerance": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "api_preservation": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ScheduleFrame": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "schedule"
+          ],
+          "properties": {
+            "step_idx": {
+              "const": 2
+            },
+            "frame_type": {
+              "const": "ScheduleFrame"
+            },
+            "producer": {
+              "const": "planner_a"
+            },
+            "schedule": {
+              "type": "object",
+              "required": [
+                "operators",
+                "fusion_plan",
+                "launch_strategy",
+                "fallbacks"
+              ],
+              "properties": {
+                "operators": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 16,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "name",
+                      "replacement_strategy",
+                      "reason"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 120
+                      },
+                      "replacement_strategy": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "fusion_plan": {
+                  "$ref": "#/$defs/StringList"
+                },
+                "launch_strategy": {
+                  "$ref": "#/$defs/StringList"
+                },
+                "fallbacks": {
+                  "$ref": "#/$defs/StringList"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "MemoryFrame": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "memory"
+          ],
+          "properties": {
+            "step_idx": {
+              "const": 3
+            },
+            "frame_type": {
+              "const": "MemoryFrame"
+            },
+            "producer": {
+              "const": "planner_a"
+            },
+            "memory": {
+              "type": "object",
+              "required": [
+                "layout_assumptions",
+                "access_pattern",
+                "coalescing_plan",
+                "shared_memory_plan",
+                "bounds_checks"
+              ],
+              "properties": {
+                "layout_assumptions": {
+                  "$ref": "#/$defs/StringList"
+                },
+                "access_pattern": {
+                  "$ref": "#/$defs/StringList"
+                },
+                "coalescing_plan": {
+                  "$ref": "#/$defs/StringList"
+                },
+                "shared_memory_plan": {
+                  "$ref": "#/$defs/StringList"
+                },
+                "bounds_checks": {
+                  "$ref": "#/$defs/StringList"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ReductionFrame": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "reduction"
+          ],
+          "properties": {
+            "step_idx": {
+              "const": 3
+            },
+            "frame_type": {
+              "const": "ReductionFrame"
+            },
+            "producer": {
+              "const": "planner_a"
+            },
+            "reduction": {
+              "type": "object",
+              "required": [
+                "axes",
+                "associativity",
+                "numerical_strategy",
+                "block_strategy",
+                "edge_cases"
+              ],
+              "properties": {
+                "axes": {
+                  "$ref": "#/$defs/StringList"
+                },
+                "associativity": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "numerical_strategy": {
+                  "$ref": "#/$defs/StringList"
+                },
+                "block_strategy": {
+                  "$ref": "#/$defs/StringList"
+                },
+                "edge_cases": {
+                  "$ref": "#/$defs/StringList"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "OptimizationHypothesisFrame": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "hypotheses"
+          ],
+          "properties": {
+            "step_idx": {
+              "const": 4
+            },
+            "frame_type": {
+              "const": "OptimizationHypothesisFrame"
+            },
+            "producer": {
+              "const": "planner_a"
+            },
+            "hypotheses": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "required": [
+                  "metric_target",
+                  "expected_effect",
+                  "risk",
+                  "validation_signal"
+                ],
+                "properties": {
+                  "metric_target": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  },
+                  "expected_effect": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "risk": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "validation_signal": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "FinalCode": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "accepted_frame_ids",
+            "code_format",
+            "python_code"
+          ],
+          "properties": {
+            "step_idx": {
+              "const": 5
+            },
+            "frame_type": {
+              "const": "FinalCode"
+            },
+            "producer": {
+              "const": "coder_c"
+            },
+            "accepted_frame_ids": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 16,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.:-]{1,96}$"
+              },
+              "uniqueItems": true
+            },
+            "code_format": {
+              "const": "complete_modelnew_python"
+            },
+            "python_code": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}
