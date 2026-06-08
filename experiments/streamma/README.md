@@ -173,6 +173,50 @@ The sync script pushes the current branch and tags. It does not store
 credentials; use an existing git credential helper or a temporary `GIT_ASKPASS`
 wrapper outside the repository when HTTPS auth is needed.
 
+## Phase Matrix
+
+Use the matrix script to start controlled runs:
+
+```bash
+export OPENAI_API_KEY="<set in shell>"
+export OPENAI_BASE_URL="https://aigc.x-see.cn/v1"
+experiments/streamma/run_matrix.sh KernelBench/level1/19_ReLU.py
+```
+
+Phase A uses `--round 1` and applies the protocol only to seed generation.
+The primary outcome is compile/correctness failure reduction from early semantic
+frames.
+
+Phase B uses `--round 2` and applies the protocol only to optimization
+generation. Round 0 remains the original seed path; round 1 reaches the
+optimization protocol only if the seed kernel is runnable and NCU succeeds. The
+primary outcome is speedup improvement from streamed bottleneck/optimization
+decisions.
+
+Gate settings:
+
+- `balanced` is the default for P3 and JSON P1 controls. It enforces JSON
+  Schema, rejects code leakage in non-final frames, and requires Judge B
+  acceptance.
+- `strict` is for stress testing gate sensitivity; do not use it as the default
+  headline setting.
+- `off` is only for natural-language P1/P2 controls where JSON schema is not
+  part of the arm.
+- Report gate rejection rate. A gate that accepts everything is too weak; a gate
+  that prevents most rounds from reaching Coder is too strong.
+
+Do not use end-to-end wall time as the main claim. Every task summary records:
+
+- `llm_wall_time`
+- `llm_api_time_sum`
+- `protocol_wall_time`
+- `compile_test_wall_time`
+- `ncu_profile_wall_time`
+- `total_wall_time`
+
+Compile/test and NCU can dominate total runtime, so communication claims must
+use the decomposed timing fields.
+
 ## Model/API Policy
 
 Do not store API keys in git. Use environment variables only.

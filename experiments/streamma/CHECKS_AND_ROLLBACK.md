@@ -71,6 +71,13 @@ S7 A/B harness run
 - Change scope: experiment scripts only.
 - Check: same tasks, rounds, warmup/repeat/tolerance, model, temperature,
   max_tokens, GPU device, and NCU settings for P0-P3.
+- Phase A and Phase B must be reported separately. Phase A uses seed protocol
+  only and measures compile/correctness failure. Phase B uses optimization
+  protocol only and measures speedup changes from bottleneck/optimization
+  decisions.
+- Do not make the headline claim end-to-end speedup. Report
+  `llm_wall_time`, `llm_api_time_sum`, `protocol_wall_time`,
+  `compile_test_wall_time`, `ncu_profile_wall_time`, and `total_wall_time`.
 - Rollback: archive/delete run directory; source remains unchanged.
 
 S8 analysis and report

@@ -6,6 +6,7 @@ from utils.print_utils import print_bold
 TOGETHER_KEY = os.environ.get("TOGETHER_API_KEY")
 DEEPSEEK_KEY = os.environ.get("DEEPSEEK_API_KEY")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 SGLANG_KEY = os.environ.get("SGLANG_API_KEY")
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -109,7 +110,10 @@ def query_server(
 
         case "openai":
             from openai import OpenAI
-            client = OpenAI(api_key=OPENAI_KEY)
+            client_kwargs = {"api_key": OPENAI_KEY}
+            if OPENAI_BASE_URL:
+                client_kwargs["base_url"] = OPENAI_BASE_URL
+            client = OpenAI(**client_kwargs)
             model = model_name
 
         case _:

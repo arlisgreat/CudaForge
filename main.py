@@ -23,6 +23,7 @@ from prompts.error import build_error_prompt
 from prompts.optimization import build_optimization_prompt
 from prompts.judger_repair import build_correctness_prompts
 from prompts.judger_optimization import build_judger_optimization_prompts
+from streamma.protocol import ProtocolConfig, generate_with_protocol
 _INVOCATION_SPLITTER = "Invoked with:"
 
 def _sanitize_error_message(exc: Exception) -> str:
@@ -54,6 +55,25 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--max_tokens", type=int, default=16384, help="LLM max new tokens")
     p.add_argument("--temperature", type=float, default=0.2, help="LLM temperature")
     p.add_argument("--top_p", type=float, default=1.0, help="LLM top_p")
+    p.add_argument(
+        "--comm_protocol",
+        choices=["serial_full", "serial_segmented", "stream_nl", "stream_json_gate"],
+        default="serial_full",
+        help="LLM communication protocol arm.",
+    )
+    p.add_argument(
+        "--stream_phase",
+        choices=["none", "seed", "optimization", "both"],
+        default="both",
+        help="Apply non-serial_full protocol to seed, optimization, both, or neither.",
+    )
+    p.add_argument(
+        "--gate_mode",
+        choices=["off", "lenient", "balanced", "strict"],
+        default="balanced",
+        help="Semantic frame gate strength. Use off for natural-language P1/P2 controls.",
+    )
+    p.add_argument("--frame_retry_budget", type=int, default=1, help="Retries for invalid semantic frames")
     # multi-task controls
     p.add_argument("--first_n", type=int, default=0, help="When arch_py is a directory, take the first N tasks (sorted)")
     p.add_argument("--num_tasks", type=int, default=1, help="When sampling, how many tasks to pick (if >0 and first_n=0)")
@@ -132,7 +152,53 @@ def _build_history_block(code_dir: Path, keep_last: int = 10) -> str:
 
 
 # ------------------- LLM & eval steps ------------------
-def _make_llm_caller(args):
+TIMING_KEYS = [
+    "llm_wall_time",
+    "llm_api_time_sum",
+    "protocol_wall_time",
+    "compile_test_wall_time",
+    "ncu_profile_wall_time",
+    "total_wall_time",
+]
+
+
+def _new_timing() -> Dict[str, Any]:
+    timing: Dict[str, Any] = {key: 0.0 for key in TIMING_KEYS}
+    timing["llm_call_count"] = 0
+    return timing
+
+
+def _public_timing(timing: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: timing.get(key, 0.0) for key in TIMING_KEYS} | {
+        "llm_call_count": int(timing.get("llm_call_count", 0) or 0)
+    }
+
+
+def _timing_snapshot(timing: Dict[str, Any]) -> Dict[str, Any]:
+    return dict(timing)
+
+
+def _timing_delta(after: Dict[str, Any], before: Dict[str, Any]) -> Dict[str, Any]:
+    delta = {key: float(after.get(key, 0.0) or 0.0) - float(before.get(key, 0.0) or 0.0) for key in TIMING_KEYS}
+    delta["llm_call_count"] = int(after.get("llm_call_count", 0) or 0) - int(before.get("llm_call_count", 0) or 0)
+    return delta
+
+
+def _add_duration(timing: Dict[str, Any], key: str, start: float) -> None:
+    timing[key] = float(timing.get(key, 0.0) or 0.0) + (time.monotonic() - start)
+
+
+def _should_use_protocol(args, stage: str) -> bool:
+    if args.comm_protocol == "serial_full":
+        return False
+    if args.stream_phase == "none":
+        return False
+    if args.stream_phase == "both":
+        return stage in {"seed", "optimization"}
+    return args.stream_phase == stage
+
+
+def _make_llm_caller(args, timing: Optional[Dict[str, Any]] = None):
 
     def call_llm(
         prompt: str,
@@ -142,24 +208,44 @@ def _make_llm_caller(args):
         round_idx: int = -1,
     ) -> str:
         sp = default_system_prompt if sys_prompt is None else sys_prompt
-        res = query_server(
-            prompt=prompt,
-            system_prompt=sp,
-            server_type=args.server_type,
-            model_name=args.model_name,
-        max_tokens=args.max_tokens,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            server_address=args.server_address,
-            server_port=args.server_port,
-            log_path=str(log_path) if log_path else None,
-            call_type=call_type,
-            round_idx=round_idx,
-        )
+        start = time.monotonic()
+        if timing is not None:
+            timing["llm_call_count"] = int(timing.get("llm_call_count", 0) or 0) + 1
+        try:
+            res = query_server(
+                prompt=prompt,
+                system_prompt=sp,
+                server_type=args.server_type,
+                model_name=args.model_name,
+                max_tokens=args.max_tokens,
+                temperature=args.temperature,
+                top_p=args.top_p,
+                server_address=args.server_address,
+                server_port=args.server_port,
+                log_path=str(log_path) if log_path else None,
+                call_type=call_type,
+                round_idx=round_idx,
+            )
+        finally:
+            end = time.monotonic()
+            if timing is not None:
+                elapsed = end - start
+                timing["llm_api_time_sum"] = float(timing.get("llm_api_time_sum", 0.0) or 0.0) + elapsed
+                timing["llm_wall_time"] = float(timing.get("llm_wall_time", 0.0) or 0.0) + elapsed
         if isinstance(res, list):
             return res[0] if res else ""
         return str(res)
     return call_llm
+
+
+def _raw_to_kernel(raw: str, code_dir: Path, io_dir: Path, round_idx: int, *, reply_name: Optional[str] = None) -> KernelIndividual:
+    reply_file = io_dir / (reply_name or f"{round_idx}_raw_reply.txt")
+    reply_file.write_text(raw, encoding="utf-8")
+    code = extract_code_block(raw) or raw
+    path = save_kernel_code(code, code_dir)
+    ind = KernelIndividual(code)
+    ind.code_path = path  # type: ignore[attr-defined]
+    return ind
 
 
 def _llm_to_kernel(
@@ -180,13 +266,50 @@ def _llm_to_kernel(
         call_type=call_type,
         round_idx=round_idx,
     )
-    reply_file = io_dir / f"{round_idx}_raw_reply.txt"
-    reply_file.write_text(raw, encoding="utf-8")
-    code = extract_code_block(raw) or raw  # fallback
-    path = save_kernel_code(code, code_dir)
-    ind = KernelIndividual(code)
-    ind.code_path = path  # type: ignore[attr-defined]
-    return ind
+    return _raw_to_kernel(raw, code_dir, io_dir, round_idx)
+
+
+def _prompt_to_kernel_with_protocol(
+    *,
+    prompt: str,
+    stage: str,
+    task_path: Path,
+    args,
+    code_dir: Path,
+    call_llm,
+    io_dir: Path,
+    round_idx: int,
+    log_path: Optional[Path],
+    timing: Dict[str, Any],
+) -> KernelIndividual:
+    if not _should_use_protocol(args, stage):
+        return _llm_to_kernel(prompt, code_dir, call_llm, io_dir, round_idx, log_path=log_path, call_type=stage)
+
+    protocol_cfg = ProtocolConfig(
+        protocol_name=args.comm_protocol,
+        stage=stage,
+        task_id=str(task_path),
+        round_idx=round_idx,
+        io_dir=io_dir,
+        log_path=log_path,
+        gate_mode=args.gate_mode,
+        frame_retry_budget=max(0, int(args.frame_retry_budget)),
+    )
+    result = generate_with_protocol(
+        base_prompt=prompt,
+        call_llm=call_llm,
+        config=protocol_cfg,
+    )
+    timing["protocol_wall_time"] = float(timing.get("protocol_wall_time", 0.0) or 0.0) + float(
+        result.metadata.get("protocol_wall_time", 0.0) or 0.0
+    )
+    return _raw_to_kernel(
+        result.final_text,
+        code_dir,
+        io_dir,
+        round_idx,
+        reply_name=f"{round_idx}_raw_reply_{stage}_{args.comm_protocol}.txt",
+    )
 
 # ================== Top-level worker: MUST live at module top level, not inside another function ==================
 def _bench_worker_entry(test_py: str,
@@ -459,6 +582,8 @@ def _append_usage_totals(log_path: Path) -> Dict[str, int]:
 
 # --------------------- single-task run -----------------
 def _run_single_task(task_path: Path, args, batch_dir: Path) -> Dict[str, Any]:
+    task_start = time.monotonic()
+    timing_totals = _new_timing()
     # --- per-task directories under the SAME batch_dir
     task_root = (batch_dir / task_path.stem).resolve()
     code_dir = task_root / "code"
@@ -480,7 +605,7 @@ def _run_single_task(task_path: Path, args, batch_dir: Path) -> Dict[str, Any]:
     with open(ref_py, "w", encoding="utf-8") as f:
         f.write(content)
 
-    call_llm = _make_llm_caller(args)
+    call_llm = _make_llm_caller(args, timing_totals)
 
     current_kernel: Optional[KernelIndividual] = None
     best_kernel: Optional[KernelIndividual] = None
@@ -489,17 +614,39 @@ def _run_single_task(task_path: Path, args, batch_dir: Path) -> Dict[str, Any]:
     scores: List[float] = []
     err_flags: List[bool] = []
     last_score_for_curve = 0.0  # default baseline for plotting on early failures
+    round_records: List[Dict[str, Any]] = []
 
     for round_idx in range(args.round):
         print(f"[{task_path.name}] Round {round_idx}")
+        round_start = time.monotonic()
+        round_before = _timing_snapshot(timing_totals)
+        round_record: Dict[str, Any] = {
+            "round_idx": round_idx,
+            "comm_protocol": args.comm_protocol,
+            "stream_phase": args.stream_phase,
+            "gate_mode": args.gate_mode,
+            "stage": "seed" if round_idx == 0 else "unknown",
+        }
 
         if round_idx == 0:
             print("[Seed] Generating the initial kernel ...")
             seed_prompt = build_seed_prompt(arch_path=task_path, gpu_name=args.gpu)
             prompt_file = io_dir / f"round{round_idx:03d}_seed_prompt.txt"
             prompt_file.write_text(seed_prompt, encoding="utf-8")
-            ind = _llm_to_kernel(seed_prompt, code_dir, call_llm, io_dir,
-                                 round_idx, log_path=log_path, call_type="seed")
+            round_record["stage"] = "seed"
+            ind = _prompt_to_kernel_with_protocol(
+                prompt=seed_prompt,
+                stage="seed",
+                task_path=task_path,
+                args=args,
+                code_dir=code_dir,
+                call_llm=call_llm,
+                io_dir=io_dir,
+                round_idx=round_idx,
+                log_path=log_path,
+                timing=timing_totals,
+            )
+            bench_start = time.monotonic()
             _bench_and_score(
                 ind,
                 ref_py=task_path,
@@ -510,12 +657,14 @@ def _run_single_task(task_path: Path, args, batch_dir: Path) -> Dict[str, Any]:
                 phase="seed",
                 metrics_dir=eval_dir,
             )
+            _add_duration(timing_totals, "compile_test_wall_time", bench_start)
 
         else:
             is_runnable = bool(getattr(current_kernel, "metrics", {}).get("runnable", False)) if current_kernel else False
 
             if not is_runnable:
                 print("[Repair] start repairing")
+                round_record["stage"] = "repair"
                 error_log = _last_n_lines(getattr(current_kernel, "metrics", {}).get(
                     "message", "")) if current_kernel else ""
 
@@ -540,6 +689,7 @@ def _run_single_task(task_path: Path, args, batch_dir: Path) -> Dict[str, Any]:
                 prompt_file.write_text(repair_prompt, encoding="utf-8")
                 ind = _llm_to_kernel(repair_prompt, code_dir, call_llm, io_dir,
                                      round_idx, log_path=log_path, call_type="repair")
+                bench_start = time.monotonic()
                 _bench_and_score(
                     ind,
                     ref_py=task_path,
@@ -550,16 +700,20 @@ def _run_single_task(task_path: Path, args, batch_dir: Path) -> Dict[str, Any]:
                     phase="repair",
                     metrics_dir=eval_dir,
                 )
+                _add_duration(timing_totals, "compile_test_wall_time", bench_start)
             else:
                 print("Optimizing start")
+                round_record["stage"] = "optimization"
                 kernel_names = extract_cuda_kernel_names(test_kernel)
                 print("=============================================================")
                 print(f"Detected kernel names: {kernel_names}")
+                ncu_start = time.monotonic()
                 csv_path = profile_bench(
                     bench_py=f"bench_ref_inputs_{args.subproc_id}.py", out_csv=f"ncu_temp_{args.subproc_id}.csv")
                 metrics_df = load_ncu_metrics(csv_path, extra_keep=("Kernel Name",),
                                               name_list=kernel_names, select="last")
                 metrics_block = metrics_to_prompt(metrics_df)
+                _add_duration(timing_totals, "ncu_profile_wall_time", ncu_start)
                 sys_judge__prompt, judge_prompt = build_judger_optimization_prompts(
                     arch_path=task_path,
                     gpu_name=args.gpu,
@@ -582,8 +736,19 @@ def _run_single_task(task_path: Path, args, batch_dir: Path) -> Dict[str, Any]:
                 )
                 prompt_file = io_dir / f"round{round_idx:03d}_opt_prompt.txt"
                 prompt_file.write_text(opt_prompt, encoding="utf-8")
-                ind = _llm_to_kernel(opt_prompt, code_dir, call_llm, io_dir, round_idx,
-                                     log_path=log_path, call_type="optimization")
+                ind = _prompt_to_kernel_with_protocol(
+                    prompt=opt_prompt,
+                    stage="optimization",
+                    task_path=task_path,
+                    args=args,
+                    code_dir=code_dir,
+                    call_llm=call_llm,
+                    io_dir=io_dir,
+                    round_idx=round_idx,
+                    log_path=log_path,
+                    timing=timing_totals,
+                )
+                bench_start = time.monotonic()
                 _bench_and_score(
                     ind,
                     ref_py=task_path,
@@ -594,6 +759,7 @@ def _run_single_task(task_path: Path, args, batch_dir: Path) -> Dict[str, Any]:
                     phase="opt",
                     metrics_dir=eval_dir,
                 )
+                _add_duration(timing_totals, "compile_test_wall_time", bench_start)
 
         # -------- update state + record curve --------
         current_kernel = ind
@@ -616,12 +782,29 @@ def _run_single_task(task_path: Path, args, batch_dir: Path) -> Dict[str, Any]:
             scores.append(last_score_for_curve)
             err_flags.append(True)
 
+        round_after = _timing_snapshot(timing_totals)
+        round_record["timing"] = _timing_delta(round_after, round_before)
+        round_record["round_wall_time"] = time.monotonic() - round_start
+        round_record["runnable"] = runnable
+        round_record["score"] = this_score
+        round_records.append(round_record)
+        (eval_dir / f"timing_round{round_idx:03d}.json").write_text(
+            json.dumps(round_record, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     # plot per-task curve
     fig_path = fig_dir / f"{task_path.stem}_score.png"
     _plot_scores(fig_path, scores, err_flags, title=f"{task_path.stem} (best={best_score:.4f})")
     print(f"[{task_path.name}] Figure saved to: {fig_path}")
 
     usage_totals = _append_usage_totals(log_path)
+    timing_totals["total_wall_time"] = time.monotonic() - task_start
+    timing_public = _public_timing(timing_totals)
+    (eval_dir / "timing_summary.json").write_text(
+        json.dumps({"timing": timing_public, "rounds": round_records}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
     return {
         "task": str(task_path),
@@ -629,6 +812,10 @@ def _run_single_task(task_path: Path, args, batch_dir: Path) -> Dict[str, Any]:
         "best_runnable": bool(getattr(best_kernel, "metrics", {}).get("runnable", False)) if best_kernel else False,
         "task_dir": str(task_root),
         "figure": str(fig_path),
+        "comm_protocol": args.comm_protocol,
+        "stream_phase": args.stream_phase,
+        "gate_mode": args.gate_mode,
+        "timing": timing_public,
         "input_tokens_sum": usage_totals["input_tokens"],
         "output_tokens_sum": usage_totals["output_tokens"],
         "total_tokens_sum": usage_totals["total_tokens"],
@@ -639,12 +826,17 @@ def _run_single_task(task_path: Path, args, batch_dir: Path) -> Dict[str, Any]:
 def _save_global_summary(batch_dir: Path, summary: List[Dict[str, Any]], avg_speedup: float, accuracy: float, total_tokens_sum: float) -> None:
     """Save summary.json and summary.csv under the batch_dir."""
     batch_dir.mkdir(parents=True, exist_ok=True)
+    timing_sums = {
+        key: sum(float((s.get("timing") or {}).get(key, 0.0) or 0.0) for s in summary)
+        for key in TIMING_KEYS
+    }
 
     # JSON
     out_json = {
         "avg_speedup": avg_speedup,
         "accuracy": accuracy,
         "total_tokens_sum": total_tokens_sum,
+        "timing_sums": timing_sums,
         "num_tasks": len(summary),
         "tasks": summary,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -655,14 +847,46 @@ def _save_global_summary(batch_dir: Path, summary: List[Dict[str, Any]], avg_spe
     csv_path = batch_dir / "summary.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["task", "best_score", "best_runnable", "task_dir", "figure"])
+        writer.writerow([
+            "task",
+            "comm_protocol",
+            "stream_phase",
+            "gate_mode",
+            "best_score",
+            "best_runnable",
+            "llm_wall_time",
+            "llm_api_time_sum",
+            "protocol_wall_time",
+            "compile_test_wall_time",
+            "ncu_profile_wall_time",
+            "total_wall_time",
+            "task_dir",
+            "figure",
+        ])
         for s in summary:
-            writer.writerow([s["task"], f'{s["best_score"]:.6f}', int(
-                bool(s["best_runnable"])), s["task_dir"], s["figure"]])
+            timing = s.get("timing") or {}
+            writer.writerow([
+                s["task"],
+                s.get("comm_protocol", ""),
+                s.get("stream_phase", ""),
+                s.get("gate_mode", ""),
+                f'{s["best_score"]:.6f}',
+                int(bool(s["best_runnable"])),
+                f'{float(timing.get("llm_wall_time", 0.0) or 0.0):.6f}',
+                f'{float(timing.get("llm_api_time_sum", 0.0) or 0.0):.6f}',
+                f'{float(timing.get("protocol_wall_time", 0.0) or 0.0):.6f}',
+                f'{float(timing.get("compile_test_wall_time", 0.0) or 0.0):.6f}',
+                f'{float(timing.get("ncu_profile_wall_time", 0.0) or 0.0):.6f}',
+                f'{float(timing.get("total_wall_time", 0.0) or 0.0):.6f}',
+                s["task_dir"],
+                s["figure"],
+            ])
         writer.writerow([])
         writer.writerow(["avg_speedup", f"{avg_speedup:.6f}"])
         writer.writerow(["accuracy", f"{accuracy:.6f}"])
         writer.writerow(["total_tokens_sum", f"{int(total_tokens_sum)}"])
+        for key in TIMING_KEYS:
+            writer.writerow([f"{key}_sum", f"{timing_sums[key]:.6f}"])
 
     print(f"[GLOBAL] Saved: {batch_dir/'summary.json'}")
     print(f"[GLOBAL] Saved: {csv_path}")
@@ -677,6 +901,7 @@ def main():
     # ---- Create ONE batch folder for this run ----
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_tag = _build_run_tag(args.server_type, args.model_name)
+    run_tag = f"{run_tag}_{args.comm_protocol}_{args.stream_phase}_{args.gate_mode}"
     # batch name hints: single file uses file stem; directory uses 'batch'
     if args.arch_py.is_file():
         batch_name = f"{stamp}_{args.arch_py.stem}_{run_tag}"
