@@ -111,26 +111,37 @@
       "minItems": 1,
       "maxItems": 24
     },
-    "ContractEndpointList": {
-      "type": "array",
-      "items": {
-        "oneOf": [
-          {
+    "StringOrStringObject": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 8,
+          "additionalProperties": {
             "type": "string",
             "minLength": 1,
             "maxLength": 240
-          },
-          {
-            "type": "object",
-            "minProperties": 1,
-            "maxProperties": 8,
-            "additionalProperties": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 240
-            }
           }
-        ]
+        }
+      ]
+    },
+    "StringOrStringObjectList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/StringOrStringObject"
+      },
+      "minItems": 1,
+      "maxItems": 24
+    },
+    "ContractEndpointList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/StringOrStringObject"
       },
       "minItems": 1,
       "maxItems": 16
@@ -174,7 +185,7 @@
                   "$ref": "#/$defs/ContractEndpointList"
                 },
                 "dtypes": {
-                  "$ref": "#/$defs/StringList"
+                  "$ref": "#/$defs/StringOrStringObjectList"
                 },
                 "shape_relations": {
                   "$ref": "#/$defs/StringList"
@@ -183,14 +194,10 @@
                   "$ref": "#/$defs/StringList"
                 },
                 "tolerance": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 120
+                  "$ref": "#/$defs/StringOrStringObject"
                 },
                 "api_preservation": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 240
+                  "$ref": "#/$defs/StringOrStringObject"
                 }
               },
               "additionalProperties": false
