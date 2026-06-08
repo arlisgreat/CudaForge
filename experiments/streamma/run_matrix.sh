@@ -35,11 +35,20 @@ common=(
   --repeat "$REPEAT"
 )
 
+failures=()
+
 run_arm() {
   local name="$1"
   shift
   echo "===== $name ====="
+  set +e
   "$PY" main.py "${common[@]}" "$@" --work_dir "$OUT_ROOT/$name"
+  local status=$?
+  set -e
+  echo "$name exit_code=$status" | tee -a "$OUT_ROOT/matrix_status.txt"
+  if [[ "$status" -ne 0 ]]; then
+    failures+=("$name:$status")
+  fi
 }
 
 # Phase A: seed generation only. Use this to evaluate compile/correctness failure.
@@ -75,3 +84,8 @@ run_arm phaseB_P3_stream_json_gate \
 
 run_arm phaseB_P1_serial_segmented_nl \
   --round 2 --comm_protocol serial_segmented --stream_phase optimization --gate_mode off
+
+if [[ "${#failures[@]}" -gt 0 ]]; then
+  echo "FAILED_ARMS ${failures[*]}" | tee -a "$OUT_ROOT/matrix_status.txt"
+  exit 1
+fi

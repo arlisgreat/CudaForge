@@ -111,6 +111,30 @@
       "minItems": 1,
       "maxItems": 24
     },
+    "ContractEndpointList": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 8,
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            }
+          }
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 16
+    },
     "ContractFrame": {
       "allOf": [
         {
@@ -144,10 +168,10 @@
               ],
               "properties": {
                 "inputs": {
-                  "$ref": "#/$defs/StringList"
+                  "$ref": "#/$defs/ContractEndpointList"
                 },
                 "outputs": {
-                  "$ref": "#/$defs/StringList"
+                  "$ref": "#/$defs/ContractEndpointList"
                 },
                 "dtypes": {
                   "$ref": "#/$defs/StringList"

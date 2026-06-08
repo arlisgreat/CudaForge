@@ -18,6 +18,76 @@ STEP_SPECS = [
 ]
 
 
+def _frame_id_prefix(task_id: str, round_idx: int) -> str:
+    safe_task = "".join(ch if ch.isalnum() or ch in "_.:-" else "_" for ch in task_id)
+    return f"{safe_task}_r{round_idx}"
+
+
+def _json_frame_skeleton(cfg: "ProtocolConfig", step_idx: int, frame_type: str, frame_label: str) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "schema_version": "1.0",
+        "protocol": "cudaforge_streamma_v1",
+        "frame_id": f"{_frame_id_prefix(cfg.task_id, cfg.round_idx)}_{frame_label}",
+        "task_id": cfg.task_id,
+        "round_idx": cfg.round_idx,
+        "step_idx": step_idx,
+        "frame_type": frame_type,
+        "producer": "planner_a",
+        "depends_on": [],
+        "summary": "one sentence semantic summary",
+        "confidence": 0.8,
+    }
+    if frame_type == "ContractFrame":
+        base["problem_contract"] = {
+            "inputs": ["input tensor names, shapes, dtypes, and constraints"],
+            "outputs": ["output tensor names, shapes, dtypes, and constraints"],
+            "dtypes": ["dtype preservation requirements"],
+            "shape_relations": ["shape relation between inputs and outputs"],
+            "invariants": ["semantic invariant that must match PyTorch reference"],
+            "tolerance": "numeric tolerance or exactness requirement",
+            "api_preservation": "class ModelNew forward signature and return format",
+        }
+    elif frame_type == "ScheduleFrame":
+        base["schedule"] = {
+            "operators": [
+                {
+                    "name": "operator name",
+                    "replacement_strategy": "custom CUDA, fused op, or keep PyTorch",
+                    "reason": "why this schedule is correct and useful",
+                }
+            ],
+            "fusion_plan": ["fusion or no-fusion plan"],
+            "launch_strategy": ["thread/block/grid level intent, not code"],
+            "fallbacks": ["fallback behavior for unsupported cases"],
+        }
+    elif frame_type == "MemoryFrame":
+        base["memory"] = {
+            "layout_assumptions": ["contiguity, strides, alignment assumptions"],
+            "access_pattern": ["read/write pattern"],
+            "coalescing_plan": ["coalescing strategy"],
+            "shared_memory_plan": ["shared memory plan or why none"],
+            "bounds_checks": ["bounds and edge case checks"],
+        }
+    elif frame_type == "ReductionFrame":
+        base["reduction"] = {
+            "axes": ["reduction axes"],
+            "associativity": "associativity/numerical caveat",
+            "numerical_strategy": ["stability strategy"],
+            "block_strategy": ["block-level reduction strategy"],
+            "edge_cases": ["empty/odd/non-contiguous edge cases"],
+        }
+    else:
+        base["hypotheses"] = [
+            {
+                "metric_target": "NCU/correctness/latency target",
+                "expected_effect": "expected performance or correctness effect",
+                "risk": "risk to correctness or performance",
+                "validation_signal": "compile/test/NCU signal to check",
+            }
+        ]
+    return base
+
+
 @dataclass
 class ProtocolConfig:
     protocol_name: str
@@ -107,6 +177,11 @@ def _planner_prompt(
         "Produce semantic planning frames only. Do not write CUDA or Python source."
     )
     if json_mode:
+        skeleton = json.dumps(
+            _json_frame_skeleton(cfg, step_idx, frame_type, frame_label),
+            ensure_ascii=False,
+            indent=2,
+        )
         prompt = f"""Produce exactly one JSON semantic frame for step {step_idx}: {frame_type}.
 
 Task id: {cfg.task_id}
@@ -122,14 +197,14 @@ Base CudaForge prompt/context:
 
 Hard rules:
 - Output JSON only, no markdown.
-- schema_version must be "1.0".
-- protocol must be "cudaforge_streamma_v1".
-- frame_id should be "{cfg.task_id.replace('/', '_')}_r{cfg.round_idx}_{frame_label}".
-- step_idx must be {step_idx}.
-- frame_type must be "{frame_type}".
-- producer must be "planner_a".
+- Use exactly the top-level keys shown in the skeleton below.
+- Use the nested object name shown in the skeleton, for example problem_contract not contract.
+- schema_version, protocol, task_id, round_idx, step_idx, frame_type, producer, summary, and confidence are required.
 - depends_on should list previous accepted Planner frame ids when relevant.
 - Do not include CUDA/Python source, code fences, source=, cpp_src, load_inline, or kernels.
+
+Required JSON skeleton:
+{skeleton}
 """
     else:
         prompt = f"""Produce semantic frame {step_idx}/4 as natural language.
@@ -160,6 +235,7 @@ def _judge_prompt(
     frame: Any,
     frame_id: str,
     json_mode: bool,
+    previous_errors: Optional[list[str]] = None,
 ) -> tuple[str, str]:
     sys_prompt = (
         "You are Judge B. Validate semantic CUDA planning frames for correctness, "
@@ -167,6 +243,23 @@ def _judge_prompt(
     )
     frame_block = json.dumps(frame, ensure_ascii=False, indent=2) if not isinstance(frame, str) else frame
     if json_mode:
+        skeleton = json.dumps(
+            {
+                "schema_version": "1.0",
+                "protocol": "cudaforge_streamma_v1",
+                "verdict_id": f"{frame_id}:judge",
+                "frame_id": frame_id,
+                "judge": "judge_b",
+                "decision": "accept",
+                "reasons": ["short reason for accept/reject/revise"],
+                "visible_to_coder": True,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        error_block = ""
+        if previous_errors:
+            error_block = "\nPrevious verdict validation errors to fix:\n" + "\n".join(previous_errors)
         prompt = f"""Return exactly one JSON verdict for this frame.
 
 Frame:
@@ -181,7 +274,12 @@ Rules:
 - judge must be "judge_b".
 - decision must be "accept", "reject", or "revise".
 - visible_to_coder must be true only for accept.
+- reasons is required and must be a non-empty array of strings.
 - Use reject if the frame is vague, unsafe for correctness, leaks code, or contradicts the task contract.
+
+Required JSON skeleton:
+{skeleton}
+{error_block}
 """
     else:
         prompt = f"""Validate this natural-language semantic frame.
@@ -382,6 +480,43 @@ def _judge_step(
     events: list[dict[str, Any]],
     out_dir: Path,
 ) -> tuple[bool, Any, list[str]]:
+    if json_mode:
+        errors: list[str] = []
+        last_verdict: Any = None
+        for attempt in range(cfg.frame_retry_budget + 1):
+            sys_prompt, prompt = _judge_prompt(
+                cfg=cfg,
+                frame=frame,
+                frame_id=frame_id,
+                json_mode=json_mode,
+                previous_errors=errors,
+            )
+            raw = _call_agent(
+                call_llm=call_llm,
+                prompt=prompt,
+                sys_prompt=sys_prompt,
+                cfg=cfg,
+                agent="judge_b",
+                step_idx=step_idx,
+                call_type=f"{cfg.stage}_{cfg.protocol_name}_judge_s{step_idx}_attempt{attempt}",
+                events=events,
+            )
+            (out_dir / f"s{step_idx}_judge_attempt{attempt}.txt").write_text(raw, encoding="utf-8")
+            try:
+                verdict = extract_json(raw)
+            except Exception as exc:
+                last_verdict = {"raw": raw}
+                errors = [f"verdict json parse error: {exc}"]
+                continue
+            last_verdict = verdict
+            if not isinstance(verdict, dict):
+                errors = ["verdict must be one JSON object"]
+                continue
+            errors = validate_verdict(verdict)
+            if not errors:
+                return verdict.get("decision") == "accept", verdict, []
+        return False, last_verdict, errors
+
     sys_prompt, prompt = _judge_prompt(cfg=cfg, frame=frame, frame_id=frame_id, json_mode=json_mode)
     raw = _call_agent(
         call_llm=call_llm,
@@ -394,19 +529,6 @@ def _judge_step(
         events=events,
     )
     (out_dir / f"s{step_idx}_judge.txt").write_text(raw, encoding="utf-8")
-
-    if json_mode:
-        try:
-            verdict = extract_json(raw)
-        except Exception as exc:
-            return False, {"raw": raw}, [f"verdict json parse error: {exc}"]
-        if not isinstance(verdict, dict):
-            return False, verdict, ["verdict must be one JSON object"]
-        errors = validate_verdict(verdict)
-        if errors:
-            return False, verdict, errors
-        return verdict.get("decision") == "accept", verdict, []
-
     accepted = "REJECT" not in raw.upper()
     return accepted, raw, []
 

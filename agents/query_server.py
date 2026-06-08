@@ -261,7 +261,8 @@ def query_server(
         else:
             messages = prompt
 
-        if is_reasoning_model and server_type == "openai":
+        uses_reasoning_effort = model.startswith("o") or model.startswith("gpt-5")
+        if is_reasoning_model and server_type == "openai" and uses_reasoning_effort:
             response = client.chat.completions.create(
                 model=model,
                 messages=messages,
