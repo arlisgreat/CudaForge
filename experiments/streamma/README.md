@@ -199,6 +199,21 @@ By default the matrix runs the four requested arms: P0, P1, P2, and P3. Set
 `INCLUDE_P1_NL=1` only when you want the extra P2-matched serial natural-language
 control.
 
+If an API connection drops during a long matrix, the OpenAI-compatible client
+retries transient connection/timeout/rate-limit/server errors. Defaults:
+`LLM_API_MAX_ATTEMPTS=5`, `LLM_API_RETRY_BASE_SECONDS=2`,
+`OPENAI_TIMEOUT_SECONDS=120`, and `OPENAI_CLIENT_MAX_RETRIES=2`.
+
+For manual resume, use `SKIP_FIRST` with the same sorted task picker. Example:
+
+```bash
+PHASES=phaseA FIRST_N=100 SKIP_FIRST=12 OUT_ROOT=run/streamma_level1_phaseA_resume \
+  experiments/streamma/run_matrix.sh KernelBench/level1
+```
+
+Directory runs save `summary.json` after every completed task, so partial
+progress remains summarizable after an interrupted run.
+
 Run Phase B separately so seed streaming and optimization streaming remain
 distinct:
 

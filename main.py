@@ -78,6 +78,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--first_n", type=int, default=0, help="When arch_py is a directory, take the first N tasks (sorted)")
     p.add_argument("--num_tasks", type=int, default=1, help="When sampling, how many tasks to pick (if >0 and first_n=0)")
     p.add_argument("--shuffle_seed", type=int, default=0, help="Random seed for sampling (0 = time)")
+    p.add_argument("--skip_first", type=int, default=0, help="When arch_py is a directory, skip this many sorted picked tasks before running")
     
     p.add_argument("--subproc_id", type=int, default=0, help="Identifier for sub-process (e.g., when running multiple in parallel)")
     
@@ -518,6 +519,11 @@ def _pick_first_n(tasks: List[Path], n: int) -> List[Path]:
     return tasks[:n]
 
 
+def _skip_first_tasks(tasks: List[Path], n: int) -> List[Path]:
+    n = max(0, min(max(n, 0), len(tasks)))
+    return tasks[n:]
+
+
 def _sample_tasks(all_tasks: List[Path], k: int, seed: int | None) -> List[Path]:
     if not all_tasks:
         raise RuntimeError("No .py tasks found.")
@@ -934,12 +940,20 @@ def main():
     else:
         picked = _sample_tasks(all_tasks, args.num_tasks, args.shuffle_seed)
         print(f"[Task Picker] Found {len(all_tasks)} tasks, sampled {len(picked)} with seed={args.shuffle_seed}.")
+    if args.skip_first and args.skip_first > 0:
+        before_skip = len(picked)
+        picked = _skip_first_tasks(picked, args.skip_first)
+        print(f"[Task Picker] Skipping first {args.skip_first} picked tasks; running {len(picked)} of {before_skip}.")
 
     summary: List[Dict[str, Any]] = []
     for i, task in enumerate(picked, 1):
         print(f"\n===== [{i}/{len(picked)}] Running task: {task} =====")
         res = _run_single_task(task, args, batch_dir=batch_dir)
         summary.append(res)
+        partial_avg = sum(s["best_score"] for s in summary) / len(summary)
+        partial_acc = sum(1 for s in summary if s["best_runnable"]) / len(summary)
+        partial_tokens = sum(int(s.get("total_tokens_sum", 0) or 0) for s in summary)
+        _save_global_summary(batch_dir, summary, partial_avg, partial_acc, partial_tokens)
 
     # global summary using each task's best kernel
     if summary:

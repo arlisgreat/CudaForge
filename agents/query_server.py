@@ -1,5 +1,6 @@
 from agents.llm_local import get_llm, GenerationConfig
 import os
+import time
 
 from utils.print_utils import print_bold
 
@@ -13,6 +14,60 @@ ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
 SAMBANOVA_API_KEY = os.environ.get("SAMBANOVA_API_KEY")
 FIREWORKS_API_KEY = os.environ.get("FIREWORKS_API_KEY")
 from typing import Optional
+
+
+TRANSIENT_LLM_ERROR_NAMES = {
+    "APIConnectionError",
+    "APITimeoutError",
+    "ConnectError",
+    "ConnectTimeout",
+    "InternalServerError",
+    "RateLimitError",
+    "ReadError",
+    "ReadTimeout",
+    "TimeoutException",
+}
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _is_transient_llm_error(exc: Exception) -> bool:
+    name = exc.__class__.__name__
+    if name in TRANSIENT_LLM_ERROR_NAMES or "Timeout" in name or "Connection" in name:
+        return True
+    status_code = getattr(exc, "status_code", None)
+    return isinstance(status_code, int) and (status_code == 429 or status_code >= 500)
+
+
+def _with_transient_retries(fn, *, label: str):
+    max_attempts = max(1, _int_env("LLM_API_MAX_ATTEMPTS", 5))
+    base_sleep = max(0.0, _float_env("LLM_API_RETRY_BASE_SECONDS", 2.0))
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 - provider SDKs use several exception types.
+            if not _is_transient_llm_error(exc) or attempt == max_attempts:
+                raise
+            last_exc = exc
+            sleep_s = base_sleep * (2 ** (attempt - 1))
+            print(f"[LLM retry] {label} attempt {attempt}/{max_attempts} failed: {exc.__class__.__name__}; sleeping {sleep_s:.1f}s")
+            time.sleep(sleep_s)
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("retry loop exited without result")
 
 
 def colorize_finish_reason(reason: Optional[str]) -> str:
@@ -110,7 +165,11 @@ def query_server(
 
         case "openai":
             from openai import OpenAI
-            client_kwargs = {"api_key": OPENAI_KEY}
+            client_kwargs = {
+                "api_key": OPENAI_KEY,
+                "timeout": _float_env("OPENAI_TIMEOUT_SECONDS", 120.0),
+                "max_retries": _int_env("OPENAI_CLIENT_MAX_RETRIES", 2),
+            }
             if OPENAI_BASE_URL:
                 client_kwargs["base_url"] = OPENAI_BASE_URL
             client = OpenAI(**client_kwargs)
@@ -263,19 +322,25 @@ def query_server(
 
         uses_reasoning_effort = model.startswith("o") or model.startswith("gpt-5")
         if is_reasoning_model and server_type == "openai" and uses_reasoning_effort:
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                reasoning_effort=reasoning_effort,
+            response = _with_transient_retries(
+                lambda: client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    reasoning_effort=reasoning_effort,
+                ),
+                label=f"{server_type}:{model}",
             )
         else:
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                n=num_completions,
-                max_tokens=max_tokens,
-                top_p=top_p,
+            response = _with_transient_retries(
+                lambda: client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    n=num_completions,
+                    max_tokens=max_tokens,
+                    top_p=top_p,
+                ),
+                label=f"{server_type}:{model}",
             )
         outputs = []
         for choice in response.choices:

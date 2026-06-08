@@ -17,6 +17,7 @@ OUT_ROOT="${OUT_ROOT:-run/streamma_matrix}"
 FIRST_N="${FIRST_N:-0}"
 NUM_TASKS="${NUM_TASKS:-1}"
 SHUFFLE_SEED="${SHUFFLE_SEED:-0}"
+SKIP_FIRST="${SKIP_FIRST:-0}"
 SUBPROC_ID="${SUBPROC_ID:-0}"
 PHASES="${PHASES:-all}"
 INCLUDE_P1_NL="${INCLUDE_P1_NL:-0}"
@@ -42,6 +43,7 @@ common=(
   --first_n "$FIRST_N"
   --num_tasks "$NUM_TASKS"
   --shuffle_seed "$SHUFFLE_SEED"
+  --skip_first "$SKIP_FIRST"
   --subproc_id "$SUBPROC_ID"
 )
 
