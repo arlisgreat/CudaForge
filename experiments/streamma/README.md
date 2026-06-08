@@ -21,24 +21,33 @@ P0 `serial_full`
 - CudaForge original behavior.
 - Full prompt -> full answer.
 - No semantic frame layer.
+- This is the unmodified CudaForge one-agent baseline. It is not claimed to be
+  the paper's `Single`; it is the project control for the original system.
 
 P1 `serial_segmented`
+- Causal control for segmented generation, multiple LLM calls, JSON schema,
+  gate/self-conditioning, and semantic-frame prompting.
+- Use the same agent roles, step count, frame order, output format, schema gate
+  mode, retry budget, and Coder final-code prompt as the matching stream arm.
 - Planner A generates all semantic steps A1..A4 first.
-- Judge B waits until A is fully done, then produces B1..B4.
-- Coder C waits until B is fully done, then generates C1..C4 and FinalCode.
-- No interleaved streaming.
+- Judge B starts only after A4 is complete, then produces/validates B1..B4.
+- Coder C starts only after B4 is complete, then generates C1..C4 and FinalCode.
+- No interleaved message passing is allowed.
 
 P2 `stream_nl`
 - StreamMA-spirit natural-language semantic frames.
 - A emits one semantic frame at a time.
 - B validates/revises each frame as it arrives.
 - C maintains an accepted-frame context but still emits code only in FinalCode.
+- This arm tests natural-language step streaming and should be reported as the
+  paper-spirit version, not the CUDA-specific main method.
 
 P3 `stream_json_gate`
 - A emits JSON semantic frames.
 - B validates each frame against schema and semantic constraints.
 - Rejected frames are not visible to C except as rejection metadata.
 - C consumes accepted frames only and produces exactly one FinalCode payload.
+- This is the main CUDA-oriented method.
 
 ## Semantic Frame Order
 
@@ -73,6 +82,30 @@ CudaForge currently has three natural LLM decision points:
 The StreamMA implementation should wrap prompt construction and LLM calls around
 these three points, then pass one complete final code block to the existing
 `_llm_to_kernel` saving/evaluation path.
+
+## Paper-Faithfulness Rules
+
+The original StreamMA protocol compares `Single`, `Serial`, and `Stream`.
+According to arXiv:2606.05158, Serial waits for each upstream agent's complete
+response before calling the next agent, while Stream runs agents concurrently,
+pushes each completed reasoning step downstream immediately, and calls
+downstream agents step-by-step with prior steps in context.
+
+For this CudaForge adaptation:
+
+- `paper_strict_stream=true` requires actual overlapping execution:
+  `B_s` or `C_s` must start before the upstream agent has completed all later
+  steps. Artifact timestamps must prove this.
+- If the implementation uses one independent LLM call per semantic frame
+  because the provider cannot yield step boundaries from a live stream, label it
+  `stream_emulated`, not paper-strict StreamMA.
+- P1 is mandatory whenever P2/P3 use multiple calls. Otherwise any observed
+  gain could come from segmented generation, JSON constraints, repeated
+  self-conditioning, or retry/gating rather than streaming communication.
+- For P3 vs P1, P1 must also use the same JSON schema/gate/retry rules but with
+  strict serial barriers. The only causal difference should be message timing.
+- For P2, steps are natural language. For P3, steps are JSON semantic frames
+  with hard schema validation. Neither may stream partial CUDA code.
 
 ## Planned Code Shape
 
@@ -118,9 +151,27 @@ Each run should write:
 - Accepted/rejected frame log.
 - FinalCode raw response.
 - Existing CudaForge metrics and usage CSV.
+- Per-agent/per-step `call_start_ts`, `first_token_ts` if available,
+  `step_complete_ts`, and `call_end_ts`.
+- Protocol metadata: `paper_strict_stream`, `stream_emulated`,
+  `call_count_by_agent`, `schema_gate_enabled`, and `barrier_policy`.
 
 The artifact path should stay under the task `evaluation/llm_io` directory so
 the existing run layout remains easy to compare.
+
+## Remote Maintenance
+
+After each clean stage:
+
+```bash
+git status --short
+scripts/streamma_checkpoint.sh <stage-name>
+scripts/streamma_sync.sh
+```
+
+The sync script pushes the current branch and tags. It does not store
+credentials; use an existing git credential helper or a temporary `GIT_ASKPASS`
+wrapper outside the repository when HTTPS auth is needed.
 
 ## Model/API Policy
 

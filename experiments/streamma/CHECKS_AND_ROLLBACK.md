@@ -9,6 +9,8 @@ communication protocol in CudaForge.
 - Create a clean git commit at every completed implementation stage.
 - Create an annotated checkpoint tag after each passing stage:
   `scripts/streamma_checkpoint.sh <stage-name>`.
+- Push the current branch and checkpoint tags after every clean stage:
+  `scripts/streamma_sync.sh`.
 - Never commit API keys, `.env` files, raw cloud responses containing secrets,
   or heavyweight run directories.
 - If a failure is isolated to the communication layer, revert or branch from the
@@ -37,7 +39,9 @@ S2 expose protocol selector
 S3 implement P1 `serial_segmented`
 - Change scope: agent prompt orchestration and artifact logging.
 - Check: A completes all frames before B starts; B completes all verdicts before
-  C starts; C emits only one final code block.
+  C starts; C emits only one final code block. P1 must match the compared
+  stream arm on step count, call count, prompt shape, schema mode, retry budget,
+  and self-conditioning context. It differs only by serial barriers.
 - Rollback: revert P1 commit; P0 must still run.
 
 S4 implement schema and leakage gate
@@ -50,14 +54,17 @@ S4 implement schema and leakage gate
 S5 implement P2 `stream_nl`
 - Change scope: interleaved natural-language frame orchestration.
 - Check: per-frame logs show A -> B -> accepted/rejected -> C context update.
-  No partial CUDA code reaches C.
+  No partial CUDA code reaches C. If claiming paper-strict StreamMA, timestamps
+  must show overlap, for example `B1.start < A4.end` in the three-agent
+  CudaForge chain. Without overlap, label the result `stream_emulated`.
 - Rollback: revert P2 commit; P0/P1 remain usable.
 
 S6 implement P3 `stream_json_gate`
 - Change scope: schema-enforced JSON frame orchestration.
 - Check: every A frame is validated before B semantic acceptance; C context is
   built only from accepted frames; rejected frames trigger retry or controlled
-  fallback.
+  fallback. P3 must use the same stream scheduling proof as P2 and the same
+  schema/gate/retry settings as P1's JSON control.
 - Rollback: revert P3 commit; P0/P1/P2 remain usable.
 
 S7 A/B harness run
@@ -87,6 +94,12 @@ Agent-flow checks:
 - B emits accept/reject verdicts with reasons.
 - C sees only accepted semantic frames.
 - FinalCode is produced once per `_llm_to_kernel` call boundary.
+- P1 barrier: `B1.start_ts > A_last.end_ts` and
+  `C1.start_ts > B_last.end_ts`.
+- P2/P3 stream overlap: at least one downstream step starts before the upstream
+  has completed all subsequent steps, otherwise report as emulated.
+- P1/P2/P3 comparison rows must include call counts by agent so multi-call
+  effects cannot be mistaken for streaming communication.
 
 Harness checks:
 - Generated code path is saved exactly where CudaForge expects it.
@@ -146,6 +159,12 @@ Create a checkpoint after a clean passing stage:
 
 ```bash
 scripts/streamma_checkpoint.sh S3_serial_segmented_pass
+```
+
+Push a clean stage:
+
+```bash
+scripts/streamma_sync.sh
 ```
 
 Recover without destroying current work:
