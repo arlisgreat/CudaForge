@@ -195,6 +195,10 @@ PHASES=phaseA FIRST_N=100 NUM_TASKS=0 OUT_ROOT=run/streamma_level1_phaseA \
   experiments/streamma/run_matrix.sh KernelBench/level1
 ```
 
+By default the matrix runs the four requested arms: P0, P1, P2, and P3. Set
+`INCLUDE_P1_NL=1` only when you want the extra P2-matched serial natural-language
+control.
+
 Run Phase B separately so seed streaming and optimization streaming remain
 distinct:
 

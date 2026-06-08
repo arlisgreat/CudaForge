@@ -19,6 +19,7 @@ NUM_TASKS="${NUM_TASKS:-1}"
 SHUFFLE_SEED="${SHUFFLE_SEED:-0}"
 SUBPROC_ID="${SUBPROC_ID:-0}"
 PHASES="${PHASES:-all}"
+INCLUDE_P1_NL="${INCLUDE_P1_NL:-0}"
 
 cd "$ROOT"
 
@@ -74,9 +75,11 @@ run_phase_a() {
   run_arm phaseA_P3_stream_json_gate \
     --round 1 --comm_protocol stream_json_gate --stream_phase seed --gate_mode balanced
 
-  # Optional P2-matched serial control without JSON gate.
-  run_arm phaseA_P1_serial_segmented_nl \
-    --round 1 --comm_protocol serial_segmented --stream_phase seed --gate_mode off
+  if [[ "$INCLUDE_P1_NL" == "1" ]]; then
+    # Optional P2-matched serial control without JSON gate.
+    run_arm phaseA_P1_serial_segmented_nl \
+      --round 1 --comm_protocol serial_segmented --stream_phase seed --gate_mode off
+  fi
 }
 
 run_phase_b() {
@@ -94,8 +97,10 @@ run_phase_b() {
   run_arm phaseB_P3_stream_json_gate \
     --round 2 --comm_protocol stream_json_gate --stream_phase optimization --gate_mode balanced
 
-  run_arm phaseB_P1_serial_segmented_nl \
-    --round 2 --comm_protocol serial_segmented --stream_phase optimization --gate_mode off
+  if [[ "$INCLUDE_P1_NL" == "1" ]]; then
+    run_arm phaseB_P1_serial_segmented_nl \
+      --round 2 --comm_protocol serial_segmented --stream_phase optimization --gate_mode off
+  fi
 }
 
 case "$PHASES" in
