@@ -183,6 +183,33 @@ export OPENAI_BASE_URL="https://aigc.x-see.cn/v1"
 experiments/streamma/run_matrix.sh KernelBench/level1/19_ReLU.py
 ```
 
+For a full Level1 run, pass the directory and force the task picker to take all
+100 sorted tasks. `main.py` otherwise defaults to sampling one task from a
+directory:
+
+```bash
+export OPENAI_API_KEY="<set in shell>"
+export OPENAI_BASE_URL="https://open.xiaojingai.com/v1"
+export PATH="/usr/local/cuda-12.4/bin:/data/workspace/airulan/conda_envs/kernelbench_py310_cu124/bin:$PATH"
+PHASES=phaseA FIRST_N=100 NUM_TASKS=0 OUT_ROOT=run/streamma_level1_phaseA \
+  experiments/streamma/run_matrix.sh KernelBench/level1
+```
+
+Run Phase B separately so seed streaming and optimization streaming remain
+distinct:
+
+```bash
+PHASES=phaseB FIRST_N=100 NUM_TASKS=0 OUT_ROOT=run/streamma_level1_phaseB \
+  experiments/streamma/run_matrix.sh KernelBench/level1
+```
+
+Summarize after each matrix:
+
+```bash
+/data/workspace/airulan/conda_envs/kernelbench_py310_cu124/bin/python \
+  experiments/streamma/summarize_results.py run/streamma_level1_phaseA
+```
+
 Phase A uses `--round 1` and applies the protocol only to seed generation.
 The primary outcome is compile/correctness failure reduction from early semantic
 frames.
@@ -216,6 +243,11 @@ Do not use end-to-end wall time as the main claim. Every task summary records:
 
 Compile/test and NCU can dominate total runtime, so communication claims must
 use the decomposed timing fields.
+
+Performance follows CudaForge/KernelBench: the score is the generated kernel
+execution speed relative to the PyTorch reference on the same GPU. For iterative
+methods, report each task's fastest correct candidate across all generated
+rounds.
 
 ## Model/API Policy
 
